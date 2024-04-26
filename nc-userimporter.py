@@ -155,6 +155,7 @@ config_ncUrl = config_ncUrl.replace("https://", "")
 
 config_protocol = "https" # use a secure connection!
 config_apiUrl = "/ocs/v1.php/cloud/users" # nextcloud API path (users), might change in the future
+config_apiUrlUserGroup = "/ocs/v1.php/cloud/users/:userid:/groups" # nextcloud API path (user groups)
 config_apiUrlGroups = "/ocs/v1.php/cloud/groups" # nextcloud API path (groups), might change in the future
 
 # Headers for CURL request, Nextcloud specific
@@ -359,6 +360,8 @@ if config_pdfOneDoc == 'yes':
 # prepare pdf-content
 Story=[]
 
+checked_groups = []
+
 # read rows from CSV file
 with codecs.open(os.path.join(appdir, config_csvfile),mode='r', encoding='utf-8') as csvfile:
   readCSV = csv.reader(csvfile, delimiter=config_csvDelimiter)
@@ -391,8 +394,10 @@ with codecs.open(os.path.join(appdir, config_csvfile),mode='r', encoding='utf-8'
       print("Username:",html.escape(row[0]),"| Display name:",html.escape(row[1]),"| Password: ","*" * len(row[2]) + 
     "| Email:",html.escape(row[3]),"| Groups:",html.escape(row[4]),"| Group admin for:",html.escape(row[5]),"| Quota:",html.escape(row[6]),)
     # build the dataset for the request
+    userid = html.escape(row[0])
+    user_groups = []
     data = [
-      ('userid', html.escape(row[0])),
+      ('userid', userid),
       ('displayName', html.escape(row[1])), 
       ('password', html.escape(row[2])),
       ('email', html.escape(row[3])),
@@ -408,6 +413,10 @@ with codecs.open(os.path.join(appdir, config_csvfile),mode='r', encoding='utf-8'
         grouplist = []
     # check if group exists  
     for group in grouplist:
+     if group.strip() in checked_groups:
+       user_groups.append(group.strip())
+       data.append(('groups[]', group.strip()))
+       continue
      try:
        groupresponse = requests.get(config_protocol + '://' + config_adminname + ':' + config_adminpass + '@' + 
          config_ncUrl + config_apiUrlGroups + '?search=' + group.strip(), headers=requestheaders, verify=config_sslVerify)
@@ -446,6 +455,8 @@ with codecs.open(os.path.join(appdir, config_csvfile),mode='r', encoding='utf-8'
        print('Create group "' + group.strip() + '": ' + response_xmlsoup.find('status').string + ' ' + response_xmlsoup.find('statuscode').string + 
         ' = ' + response_xmlsoup.find('message').string)
 
+     checked_groups.append(group.strip())
+     user_groups.append(group.strip())
      data.append(('groups[]', group.strip())) # groups is parameter NC API
 
     # if value exists: append group admin values to data array/list for CURL
@@ -477,8 +488,34 @@ with codecs.open(os.path.join(appdir, config_csvfile),mode='r', encoding='utf-8'
 
     # show detailed info of response
     response_xmlsoup = BeautifulSoup(response.text, "html.parser")
-    print(response_xmlsoup.find('status').string + ' ' + response_xmlsoup.find('statuscode').string + 
-      ' = ' + response_xmlsoup.find('message').string)
+    # Handle user already exists and apply groups
+    if (response_xmlsoup.find('statuscode').string == "102"):
+      for group in user_groups:
+        singleGroupData = [
+          ('groupid', group)
+        ]
+        try:
+          response = requests.post(config_protocol + '://' + config_adminname + ':' + config_adminpass + '@' + 
+            config_ncUrl + config_apiUrlUserGroup.replace(":userid:", userid), headers=requestheaders, data=singleGroupData, verify=config_sslVerify)
+        except requests.exceptions.RequestException as e:  # handling errors
+          print(e)
+          print("The CURL request could not be performed.")
+          input("Press [ANY KEY] to confirm and end the process.")
+          sys.exit(1)
+        #show detailed info of response
+
+        # catch wrong config
+        if response.status_code != 200:
+          print("HTTP Status: " + str(response.status_code))
+          print("Your config.xml is wrong or your cloud is not reachable.")
+          input("Press [ANY KEY] to confirm and end the process.")
+          sys.exit(1)
+        response_xmlsoup = BeautifulSoup(response.text, "html.parser")
+        print(response_xmlsoup.find('status').string + ' ' + response_xmlsoup.find('statuscode').string + 
+        ' = ' + response_xmlsoup.find('message').string)
+    else:
+      print(response_xmlsoup.find('status').string + ' ' + response_xmlsoup.find('statuscode').string + 
+        ' = ' + response_xmlsoup.find('message').string)
 
     # append detailed response to logfile in output-folder
     logfile = codecs.open(os.path.join(output_dir,'output.log'),mode='a', encoding='utf-8')
